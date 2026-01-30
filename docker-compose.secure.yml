@@ -1,0 +1,102 @@
+version: "3.8"
+
+# ISA AI Ops Agent — Hardened Docker Compose
+# Usage: docker compose -f docker-compose.secure.yml up -d
+
+services:
+  # ═══════════════════════════════════════
+  # Caddy Reverse Proxy (SSL + Rate Limiting)
+  # ═══════════════════════════════════════
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - AGENT_PORT=${AGENT_PORT:-47293}
+    networks:
+      - frontend
+    depends_on:
+      - agent
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ═══════════════════════════════════════
+  # ISA AI Ops Agent
+  # ═══════════════════════════════════════
+  agent:
+    image: node:22-slim
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "npm install -g clawdbot@latest && clawdbot gateway start --foreground"
+    volumes:
+      - agent_config:/root/.clawdbot
+      - agent_workspace:/root/workspace
+      - ./config/clawdbot.json:/root/.clawdbot/clawdbot.json:ro
+    environment:
+      - NODE_ENV=production
+      - TZ=${TZ:-Australia/Sydney}
+    networks:
+      - frontend
+      - backend
+    # NOT exposed to host — only accessible via Caddy
+    expose:
+      - "${AGENT_PORT:-47293}"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp:size=500M
+
+  # ═══════════════════════════════════════
+  # Watchtower (Auto-updates)
+  # ═══════════════════════════════════════
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400  # Check daily
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+  agent_config:
+  agent_workspace:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true  # No external access
